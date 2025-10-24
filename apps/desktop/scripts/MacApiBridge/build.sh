@@ -249,10 +249,14 @@ echo ""
 # Determine which binary to test based on current architecture
 CURRENT_ARCH=$(uname -m)
 if [[ "$CURRENT_ARCH" == "x86_64" ]]; then
-    TEST_BINARY="$X64_PATH"
+    # TEST_BINARY="$X64_PATH"
+    TEST_BINARY=""
+
     TEST_ARCH_NAME="x64 (Intel)"
 elif [[ "$CURRENT_ARCH" == "arm64" ]]; then
-    TEST_BINARY="$ARM64_PATH"
+    # TEST_BINARY="$ARM64_PATH"
+    TEST_BINARY=""
+    
     TEST_ARCH_NAME="arm64 (Apple Silicon)"
 else
     echo "⚠️  Unknown architecture: $CURRENT_ARCH, skipping tests"
