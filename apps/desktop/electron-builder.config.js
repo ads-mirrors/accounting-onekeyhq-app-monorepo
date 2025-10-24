@@ -51,7 +51,7 @@ module.exports = {
       { target: 'zip', arch: ['x64', 'arm64'] },
     ],
     'entitlements': getPath('entitlements.mac.plist'),
-    'entitlementsInherit': getPath('entitlements.mas.inherit.plist'),
+    // 'entitlementsInherit': getPath('entitlements.mas.inherit.plist'),
     'extendInfo': {
       'NSCameraUsageDescription': 'Please allow OneKey to use your camera',
     },

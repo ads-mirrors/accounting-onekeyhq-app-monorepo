@@ -135,7 +135,7 @@ exports.default = async function fileOperation(context) {
 
   if (electronPlatformName === 'darwin') {
     // Sign Mac API Bridge binaries before adding fuses
-    await signMacApiBridgeBinaries(context);
+    // await signMacApiBridgeBinaries(context);
   }
 
   if (electronPlatformName === 'darwin' || electronPlatformName === 'win32') {
