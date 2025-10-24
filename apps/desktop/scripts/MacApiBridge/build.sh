@@ -2,6 +2,21 @@
 
 # Build MacApiBridge - Unified macOS Native API Tool
 # This script compiles the unified Swift bridge for CloudKit and Keychain access
+#
+# Usage:
+#   Local Development:
+#     bash build.sh
+#     - Automatically detects and uses installed Apple Development certificate
+#
+#   CI/Production Build:
+#     CSC_LINK=./sign.p12 CSC_KEY_PASSWORD=xxx bash build.sh
+#     - Uses certificate from sign.p12 file
+#     - Creates temporary keychain for signing
+#     - Cleans up keychain after build
+#
+# Environment Variables:
+#   CSC_LINK          - Path to .p12 certificate file (relative to apps/desktop)
+#   CSC_KEY_PASSWORD  - Password for the .p12 certificate
 
 set -e
 
@@ -66,6 +81,150 @@ swiftc -target arm64-apple-macos12 \
     "$SCRIPT_DIR/MacApiBridge.swift" \
     "$CLOUDKIT_CORE" \
     "$KEYCHAIN_CORE"
+
+# Code sign binaries with entitlements
+ENTITLEMENTS_PATH="$SCRIPT_DIR/../../entitlements.mac.plist"
+echo "🔐 Signing binaries with entitlements..."
+echo "  Entitlements: $ENTITLEMENTS_PATH"
+echo ""
+
+# Determine signing identity based on environment
+SIGN_IDENTITY=""
+P12_FILE="$SCRIPT_DIR/../../sign.p12"
+
+# Check if CSC_LINK and CSC_KEY_PASSWORD are set (CI environment)
+if [[ -n "$CSC_LINK" ]] && [[ -n "$CSC_KEY_PASSWORD" ]]; then
+    echo "  📦 CI Mode: Using certificate from CSC_LINK"
+    P12_PATH="$SCRIPT_DIR/../../$CSC_LINK"
+
+    if [[ ! -f "$P12_PATH" ]]; then
+        echo "  ❌ Error: Certificate file not found at $P12_PATH"
+        exit 1
+    fi
+
+    # Create a temporary keychain for CI
+    TEMP_KEYCHAIN="build-macapi-bridge.keychain"
+    TEMP_KEYCHAIN_PASSWORD="temp-$(date +%s)"
+
+    echo "  Creating temporary keychain..."
+    security create-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
+    security set-keychain-settings -lut 21600 "$TEMP_KEYCHAIN"
+    security unlock-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
+
+    echo "  Importing certificate..."
+    security import "$P12_PATH" -k "$TEMP_KEYCHAIN" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+
+    # Set partition list to allow codesigning without prompting
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
+
+    # Add to search list
+    security list-keychains -d user -s "$TEMP_KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+
+    # Find the identity from the imported certificate
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | grep "Developer ID Application" | head -n 1 | awk -F'"' '{print $2}')
+
+    if [[ -z "$SIGN_IDENTITY" ]]; then
+        # Try Apple Development if Developer ID not found
+        SIGN_IDENTITY=$(security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
+    fi
+
+    if [[ -n "$SIGN_IDENTITY" ]]; then
+        echo "  ✅ Using certificate: $SIGN_IDENTITY"
+    else
+        echo "  ❌ Error: Could not find signing identity in certificate"
+        security delete-keychain "$TEMP_KEYCHAIN"
+        exit 1
+    fi
+
+# Check if sign.p12 exists (alternative CI setup or manual build)
+elif [[ -f "$P12_FILE" ]] && [[ -n "$CSC_KEY_PASSWORD" ]]; then
+    echo "  📦 Using certificate from apps/desktop/sign.p12"
+
+    # Create a temporary keychain
+    TEMP_KEYCHAIN="build-macapi-bridge.keychain"
+    TEMP_KEYCHAIN_PASSWORD="temp-$(date +%s)"
+
+    echo "  Creating temporary keychain..."
+    security create-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
+    security set-keychain-settings -lut 21600 "$TEMP_KEYCHAIN"
+    security unlock-keychain -p "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
+
+    echo "  Importing certificate..."
+    security import "$P12_FILE" -k "$TEMP_KEYCHAIN" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$TEMP_KEYCHAIN_PASSWORD" "$TEMP_KEYCHAIN"
+    security list-keychains -d user -s "$TEMP_KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | grep "Developer ID Application" | head -n 1 | awk -F'"' '{print $2}')
+
+    if [[ -z "$SIGN_IDENTITY" ]]; then
+        SIGN_IDENTITY=$(security find-identity -v -p codesigning "$TEMP_KEYCHAIN" | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
+    fi
+
+    if [[ -n "$SIGN_IDENTITY" ]]; then
+        echo "  ✅ Using certificate: $SIGN_IDENTITY"
+    else
+        echo "  ❌ Error: Could not find signing identity in certificate"
+        security delete-keychain "$TEMP_KEYCHAIN"
+        exit 1
+    fi
+
+# Local development mode: Try to find an Apple Development certificate
+else
+    echo "  🔧 Local Development Mode: Looking for installed certificates..."
+
+    # Try Apple Development certificate first
+    DEV_CERT=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
+
+    if [[ -n "$DEV_CERT" ]]; then
+        echo "  ✅ Using certificate: $DEV_CERT"
+        SIGN_IDENTITY="$DEV_CERT"
+    else
+        # Try Developer ID Application as fallback
+        DEV_ID_CERT=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -n 1 | awk -F'"' '{print $2}')
+
+        if [[ -n "$DEV_ID_CERT" ]]; then
+            echo "  ✅ Using certificate: $DEV_ID_CERT"
+            SIGN_IDENTITY="$DEV_ID_CERT"
+        else
+            echo "  ⚠️  No Apple Development or Developer ID certificate found"
+            echo "  ⚠️  Using ad-hoc signing (CloudKit may not work)"
+            SIGN_IDENTITY="-"
+        fi
+    fi
+fi
+
+echo ""
+
+# Sign x64 binary
+codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" "$X64_PATH"
+echo "  ✅ Signed x64 binary"
+
+# Sign arm64 binary
+codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" "$ARM64_PATH"
+echo "  ✅ Signed arm64 binary"
+echo ""
+
+# Verify code signatures
+echo "🔍 Verifying code signatures..."
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "x64 Binary Signature:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+codesign -dvvv "$X64_PATH" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier|Format|Signature size"
+echo ""
+echo "x64 Entitlements:"
+codesign -d --entitlements :- --xml "$X64_PATH" 2>/dev/null | grep -E "com.apple.developer.icloud-services|com.apple.developer.ubiquity-container-identifiers|iCloud.so.onekey.wallet|keychain-access-groups" | sed 's/^/  /'
+echo ""
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "arm64 Binary Signature:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+codesign -dvvv "$ARM64_PATH" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier|Format|Signature size"
+echo ""
+echo "arm64 Entitlements:"
+codesign -d --entitlements :- --xml "$ARM64_PATH" 2>/dev/null | grep -E "com.apple.developer.icloud-services|com.apple.developer.ubiquity-container-identifiers|iCloud.so.onekey.wallet|keychain-access-groups" | sed 's/^/  /'
+echo ""
 
 # Verify architectures
 echo "✅ Verifying architectures..."
@@ -209,3 +368,11 @@ echo "   - Runtime detects and uses correct architecture binary"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
+
+# Cleanup temporary keychain if it was created
+if [[ -n "$TEMP_KEYCHAIN" ]]; then
+    echo "🧹 Cleaning up temporary keychain..."
+    security delete-keychain "$TEMP_KEYCHAIN" 2>/dev/null || true
+    echo "✅ Temporary keychain cleaned up"
+    echo ""
+fi

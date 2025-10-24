@@ -103,6 +103,12 @@ struct MacApiBridge {
     // MARK: - CloudKit Command Handler
 
     static func handleCloudKitCommand(command: String, args: [String]) async -> String {
+        // Test command without CloudKit initialization
+        if command == "test" {
+            return jsonString(["test": "Basic async command works"])
+        }
+
+        // For all other commands, initialize CloudKit
         let moduleCore = CloudKitModuleCore()
 
         switch command {
