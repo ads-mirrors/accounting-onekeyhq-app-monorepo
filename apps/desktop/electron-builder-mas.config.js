@@ -29,7 +29,7 @@ module.exports = {
     // 'mergeASARs': false,
     'gatekeeperAssess': true,
     'entitlements': 'entitlements.mas.plist',
-    // 'entitlementsInherit': 'entitlements.mas.inherit.plist',
+    'entitlementsInherit': 'entitlements.mas.inherit.plist',
     'entitlementsLoginHelper': 'entitlements.mas.loginhelper.plist',
     'provisioningProfile': 'OneKey_Mac_App.provisionprofile',
     'extendInfo': {
